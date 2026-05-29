@@ -2,7 +2,7 @@
 
 **Remote-Steuerung für Action-Cams via ESP32-S3**
 
-[![Version](https://img.shields.io/badge/version-dev-blue)](https://github.com/hondamz/ESP32-ALCAM)
+[![Version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/hondamz/ESP32-ALCAM)
 [![Platform](https://img.shields.io/badge/platform-ESP32--S3-green)](https://github.com/hondamz/ESP32-ALCAM)
 
 ---
@@ -23,13 +23,14 @@ ESP32-ALCAM steuert eine Action-Kamera drahtlos per Bluetooth/WiFi über einen E
 
 ## Steuerungsfunktionen
 
-| Funktion | Beschreibung |
-|----------|-------------|
-| **Aufnahme Start** | Startet die Videoaufnahme |
-| **Aufnahme Stop** | Stoppt die laufende Aufnahme |
-| **Aufnahme Pause** | Pausiert die laufende Aufnahme |
-| **Kamera Einschalten** | Weckt die Kamera aus dem Standby |
-| **Kamera Ausschalten** | Schaltet die Kamera in den Standby |
+| Funktion | Serieller Befehl | Beschreibung |
+|----------|-----------------|-------------|
+| **Aufnahme Start** | `START` | Startet die Videoaufnahme |
+| **Aufnahme Stop** | `STOP` | Stoppt die laufende Aufnahme |
+| **Aufnahme Pause** | `PAUSE` | Pausiert / setzt Aufnahme fort |
+| **Kamera Ausschalten** | `OFF` | Schaltet die Kamera aus |
+| **Status anzeigen** | `STATUS` | Verbindungs- und Aufnahmestatus |
+| **Hilfe** | `HELP` | Alle Befehle anzeigen |
 
 ---
 
@@ -44,11 +45,23 @@ Das Setup-Menü ermöglicht die Ersteinrichtung und Kopplung mit einer Action-Ca
 
 ---
 
+## Verwendung (Serieller Monitor)
+
+Nach dem Flashen den Seriellen Monitor mit **115200 Baud** öffnen:
+
+1. Beim ersten Start: `SETUP` eingeben → ESP scannt nach Insta360-Kameras
+2. Kamera wird gefunden, verbunden und Adresse in NVS gespeichert
+3. Ab sofort verbindet sich der ESP automatisch beim Start
+4. Steuerung per Befehle (siehe Tabelle oben)
+
+---
+
 ## Hardware
 
 - **Mikrocontroller:** ESP32-S3
 - **Framework:** Arduino IDE
-- **Kommunikation:** Bluetooth LE / WiFi
+- **Protokoll:** Bluetooth LE (proprietäres Insta360-Protokoll)
+- **Bibliotheken:** `BLEDevice`, `Preferences` (beide in ESP32 Arduino Core enthalten)
 
 ---
 
@@ -71,7 +84,7 @@ ESP32-ALCAM/
 
 | Version | Datum | Änderungen |
 |---------|-------|-----------|
-| dev | 2026-05-29 | Projektstart, Grundstruktur angelegt |
+| 0.1.0 | 2026-05-29 | Projektstart: BLE-Grundgerüst, Insta360 X4, Serieller Monitor, NVS-Pairing |
 
 ---
 
