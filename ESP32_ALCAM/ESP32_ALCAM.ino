@@ -26,23 +26,24 @@
 #include <Preferences.h>
 
 // ----------------------------------------------------------------
-//  Insta360 X4 – BLE UUIDs
+//  Insta360 X4 – BLE UUIDs (ermittelt per Service-Scan)
 // ----------------------------------------------------------------
-// Die Insta360 nutzt einen proprietären BLE-Dienst für Kamerasteuerung.
-// Service UUID und Characteristic UUID der Insta360-Protokoll-Implementierung.
-#define INSTA360_SERVICE_UUID        "0000FFF0-0000-1000-8000-00805F9B34FB"
-#define INSTA360_WRITE_CHAR_UUID     "0000FFF3-0000-1000-8000-00805F9B34FB"
-#define INSTA360_NOTIFY_CHAR_UUID    "0000FFF4-0000-1000-8000-00805F9B34FB"
+#define INSTA360_SERVICE_UUID        "0000be80-0000-1000-8000-00805f9b34fb"
+#define INSTA360_WRITE_CHAR_UUID     "0000be81-0000-1000-8000-00805f9b34fb"  // READ+WRITE
+#define INSTA360_NOTIFY_CHAR_UUID    "0000be82-0000-1000-8000-00805f9b34fb"  // NOTIFY
+#define INSTA360_READ_CHAR_UUID      "0000be83-0000-1000-8000-00805f9b34fb"  // READ
 
 // ----------------------------------------------------------------
 //  BLE-Kommandos für Insta360 X4
 // ----------------------------------------------------------------
-// Byte-Sequenzen aus Reverse-Engineering des Insta360-Protokolls.
-const uint8_t CMD_REC_START[]  = { 0x01, 0x06, 0x00, 0x00, 0x00 };  // Aufnahme starten
-const uint8_t CMD_REC_STOP[]   = { 0x01, 0x07, 0x00, 0x00, 0x00 };  // Aufnahme stoppen
-const uint8_t CMD_REC_PAUSE[]  = { 0x01, 0x08, 0x00, 0x00, 0x00 };  // Aufnahme pausieren
-const uint8_t CMD_CAM_OFF[]    = { 0x01, 0x05, 0x00, 0x00, 0x00 };  // Kamera ausschalten
-const uint8_t CMD_KEEP_ALIVE[] = { 0x01, 0x01, 0x00, 0x00, 0x00 };  // Verbindung halten
+// Protokoll: [Länge_Payload][Cmd-Gruppe][Cmd-ID][Params...]
+// Länge = Anzahl der folgenden Bytes (ohne Länge-Byte selbst)
+// Quelle: Insta360 Open SDK / Community Reverse Engineering
+const uint8_t CMD_REC_START[]  = { 0x05, 0x02, 0x01, 0x00, 0x00, 0x00 };  // Aufnahme starten
+const uint8_t CMD_REC_STOP[]   = { 0x05, 0x02, 0x02, 0x00, 0x00, 0x00 };  // Aufnahme stoppen
+const uint8_t CMD_REC_PAUSE[]  = { 0x05, 0x02, 0x03, 0x00, 0x00, 0x00 };  // Aufnahme pausieren
+const uint8_t CMD_CAM_OFF[]    = { 0x03, 0x05, 0x01, 0x00 };               // Kamera ausschalten
+const uint8_t CMD_KEEP_ALIVE[] = { 0x01, 0x00 };                            // Keep-Alive / Heartbeat
 
 // ----------------------------------------------------------------
 //  Serielle Befehle (USB-Monitor)
@@ -54,12 +55,15 @@ const uint8_t CMD_KEEP_ALIVE[] = { 0x01, 0x01, 0x00, 0x00, 0x00 };  // Verbindun
 #define CMD_SERIAL_SETUP   "SETUP"
 #define CMD_SERIAL_STATUS  "STATUS"
 #define CMD_SERIAL_HELP    "HELP"
+#define CMD_SERIAL_SCAN    "SCAN"
+#define CMD_SERIAL_RAW     "RAW"   // RAW:01 02 03 ...  – Hex-Bytes direkt senden
+#define CMD_SERIAL_READ    "READ"  // be83 Characteristic lesen
 
 // ----------------------------------------------------------------
 //  Konfiguration
 // ----------------------------------------------------------------
 #define BLE_SCAN_DURATION_SEC   10
-#define KEEP_ALIVE_INTERVAL_MS  5000
+#define KEEP_ALIVE_INTERVAL_MS  30000
 #define RECONNECT_INTERVAL_MS   10000
 #define SERIAL_BAUD             115200
 
@@ -116,11 +120,27 @@ void clearCameraSettings() {
 // ================================================================
 //  BLE – Benachrichtigungs-Callback
 // ================================================================
+// Letztes Notify-Paket zum Entfiltern von Duplikaten
+static uint8_t lastNotify[32];
+static size_t  lastNotifyLen = 0;
+
 void notifyCallback(BLERemoteCharacteristic* pChar, uint8_t* pData, size_t length, bool isNotify) {
-  Serial.print("[BLE] Notify: ");
-  for (size_t i = 0; i < length; i++) {
-    Serial.printf("%02X ", pData[i]);
-  }
+  // Bekannte Heartbeat-Muster stumm schalten (05 00 00 / 07 00 00 00 ...)
+  bool isHeartbeat = (length <= 7 &&
+    (pData[0] == 0x05 || pData[0] == 0x07 || pData[0] == 0x00) &&
+    (length < 2 || pData[1] == 0x00 || pData[1] == 0x05));
+  if (isHeartbeat) return;
+
+  // Identische Pakete nicht wiederholen
+  if (length == lastNotifyLen && memcmp(pData, lastNotify, length) == 0) return;
+  memcpy(lastNotify, pData, min(length, (size_t)32));
+  lastNotifyLen = length;
+
+  Serial.print("[CAM->ESP] ");
+  for (size_t i = 0; i < length; i++) Serial.printf("%02X ", pData[i]);
+  Serial.print("| ");
+  for (size_t i = 0; i < length; i++)
+    Serial.print(pData[i] >= 0x20 && pData[i] < 0x7F ? (char)pData[i] : '.');
   Serial.println();
 }
 
@@ -162,6 +182,32 @@ public:
     }
   }
 };
+
+// ================================================================
+//  BLE – Alle Services und Characteristics ausgeben (Diagnose)
+// ================================================================
+void dumpBLEServices() {
+  Serial.println("\n[DIAG] === BLE Service-Scan ===");
+  std::map<std::string, BLERemoteService*>* services = pClient->getServices();
+  if (services->empty()) {
+    Serial.println("[DIAG] Keine Services gefunden.");
+    return;
+  }
+  for (auto& svc : *services) {
+    Serial.println("[DIAG] Service: " + String(svc.first.c_str()));
+    std::map<std::string, BLERemoteCharacteristic*>* chars = svc.second->getCharacteristics();
+    for (auto& ch : *chars) {
+      String props = "";
+      BLERemoteCharacteristic* c = ch.second;
+      if (c->canRead())    props += "READ ";
+      if (c->canWrite())   props += "WRITE ";
+      if (c->canNotify())  props += "NOTIFY ";
+      if (c->canIndicate()) props += "INDICATE ";
+      Serial.println("  Char: " + String(ch.first.c_str()) + "  [" + props + "]");
+    }
+  }
+  Serial.println("[DIAG] === Ende Service-Scan ===\n");
+}
 
 // ================================================================
 //  BLE – Verbindung aufbauen
@@ -314,7 +360,50 @@ void printHelp() {
   Serial.println("  SETUP   – Kamera suchen und koppeln");
   Serial.println("  STATUS  – Aktuellen Status anzeigen");
   Serial.println("  HELP    – Diese Hilfe anzeigen");
+  Serial.println("  SCAN    – BLE Services auflisten (verbunden)");
+  Serial.println("  READ    – Status-Characteristic be83 lesen");
+  Serial.println("  RAW:XX XX XX ... – Rohe Hex-Bytes senden");
+  Serial.println("  Beispiel: RAW:05 02 01 00 00 00");
   Serial.println("=====================================\n");
+}
+
+// ================================================================
+//  RAW-Hex-Bytes senden  (z.B. "RAW:05 02 01 00 00 00")
+// ================================================================
+void sendRawHex(const String& hexStr) {
+  if (!connected || pWriteChar == nullptr) { Serial.println("[ERR] Nicht verbunden."); return; }
+  uint8_t buf[32];
+  int len = 0;
+  String s = hexStr;
+  s.trim();
+  int pos = 0;
+  while (pos < (int)s.length() && len < 32) {
+    while (pos < (int)s.length() && s[pos] == ' ') pos++;
+    if (pos + 1 >= (int)s.length()) break;
+    String byteStr = s.substring(pos, pos + 2);
+    buf[len++] = (uint8_t)strtol(byteStr.c_str(), nullptr, 16);
+    pos += 2;
+  }
+  if (len == 0) { Serial.println("[ERR] Keine gültigen Hex-Bytes."); return; }
+  Serial.print("[ESP->CAM] ");
+  for (int i = 0; i < len; i++) Serial.printf("%02X ", buf[i]);
+  Serial.println();
+  pWriteChar->writeValue(buf, len);
+}
+
+// ================================================================
+//  be83 READ-Characteristic auslesen
+// ================================================================
+void readStatusChar() {
+  if (!connected || pClient == nullptr) { Serial.println("[ERR] Nicht verbunden."); return; }
+  BLERemoteService* svc = pClient->getService(INSTA360_SERVICE_UUID);
+  if (!svc) return;
+  BLERemoteCharacteristic* rc = svc->getCharacteristic(INSTA360_READ_CHAR_UUID);
+  if (!rc || !rc->canRead()) { Serial.println("[ERR] Read-Char nicht verfügbar."); return; }
+  String val = rc->readValue();
+  Serial.print("[be83 READ] ");
+  for (size_t i = 0; i < (size_t)val.length(); i++) Serial.printf("%02X ", (uint8_t)val[i]);
+  Serial.println();
 }
 
 // ================================================================
@@ -333,7 +422,10 @@ void handleSerialInput() {
   else if (input == CMD_SERIAL_SETUP)  runSetupMode();
   else if (input == CMD_SERIAL_STATUS) printStatus();
   else if (input == CMD_SERIAL_HELP)   printHelp();
-  else if (input.length() > 0)         Serial.println("[?] Unbekannter Befehl. HELP eingeben.");
+  else if (input == CMD_SERIAL_SCAN)              { if (connected) dumpBLEServices(); else Serial.println("[ERR] Nicht verbunden."); }
+  else if (input == CMD_SERIAL_READ)              readStatusChar();
+  else if (input.startsWith(CMD_SERIAL_RAW ":")) sendRawHex(input.substring(4));
+  else if (input.length() > 0)                    Serial.println("[?] Unbekannter Befehl. HELP eingeben.");
 }
 
 // ================================================================
