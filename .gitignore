@@ -1,0 +1,4 @@
+secrets.local
+.DS_Store
+*.swp
+build/

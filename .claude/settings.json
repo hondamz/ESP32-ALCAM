@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /Users/andreasliedke/SynologyDriveShared/SynologyDrive/_entwicklung/ESP32-ALCAM/git_push.sh >> /tmp/esp32-alcam-push.log 2>&1",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
